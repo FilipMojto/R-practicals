@@ -1,0 +1,268 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Practicum 1.2
+
+### Loading dataset
+
+```{r}
+library(readr)
+
+getwd()
+
+fifa_df = read_csv("players_22.csv")
+View(fifa_df)
+
+```
+
+### Reducing dataset
+
+Here we reduce the dataset by filtering the columns we are going to need in this practicum.
+
+```{r}
+
+library(dplyr)
+
+cols <- c("short_name", "league_name", "preferred_foot", "player_positions", "overall", "value_eur", "wage_eur", "dob", "potential")
+
+fifa_df_reduced <- fifa_df %>%
+  select(all_of(cols))
+
+fifa_df_reduced
+```
+
+## Distribution of left-footed players across all leagues
+
+First step is to quickly examine the distribution of left-footed players in all leagues.
+
+### League-Player distribution
+
+```{r}
+
+library(dplyr)
+
+# fifa_df %>%
+#   filter(preferred_foot == "Left") %>%
+#   group_by(league_name) %>%
+#   summarise(left_footed_pl_count = n()) %>%
+#   print()
+
+# faster alternative
+fifa_df_reduced %>%
+  filter(preferred_foot == 'Left') %>%
+  count(league_name, name = 'left_footed_pl_count') 
+```
+
+### Visualization
+
+Based on the visualization below, we can see that average proportion of left-footed players across all leagues makes up approximately 25% of whole.
+
+```{r}
+library(ggplot2)
+
+fifa_df_reduced %>%
+  count(league_name, preferred_foot) %>%
+  ggplot(aes(x = league_name, y = n, fill = preferred_foot)) +
+  geom_bar(stat = "identity", position = "fill") +  # "fill" makes it a proportion (stacked)
+  labs(title = "Proportion of Left-Footed Players in Each League",
+       x = "League",
+       y = "Proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Proportion of player position categories
+
+We utilize ggplot2 library to visualize proportions of left and right-footed players for each player_category.
+
+### Data bucketing
+
+First, custom groupings of player positions need to be created. We are going to bucket the positions into offensive, defensive and midfielder bins. Final step of this process involves adding a new column storing these categories for each player.
+
+```{r}
+
+# Define offensive and defensive positions
+offensive_positions <- c("LF", "CF", "RF", "LW", "RW", "LS", "ST", "RS")
+defensive_positions <- c("LWB", "RWB", "LCB", "CB", "RCB", "LB", "RB")
+midfielder_positions <- c("LM", "LAM", "CM", "RM", "RAM", "CAM", "CDM", "DM", "LDM", "RDM")
+
+
+# Categorize player positions
+fifa_df_reduced <- fifa_df_reduced %>%
+  mutate(position_category = case_when(
+    player_positions %in% offensive_positions ~ "Offensive",
+    player_positions %in% defensive_positions ~ "Defensive",
+    player_positions %in% midfielder_positions ~ "Midfielder",
+    TRUE ~ "Other"
+  ))
+
+fifa_df
+```
+
+### Grouping the buckets
+
+Second step involves grouping the buckets and calculating the count for each.
+
+```{r}
+
+# Summarize data to get the count of players by position and preferred foot
+grouping_counts <- fifa_df_left_right %>%
+  group_by(position_category, preferred_foot) %>%
+  summarise(Count = n()) %>%
+  ungroup()
+
+grouping_counts
+
+```
+
+### Plotting
+
+By following the principles of functional programming, we are going to define a function which will visualize a distribution plot for any column we may need.
+
+```{r}
+
+library(tidyverse)
+
+plot_metric <- function(df, target, count, fill, title, subtitle) {
+  p <- df %>%
+    ggplot(aes(x = reorder(.data[[target]], .data[[count]]), y = .data[[count]], fill = .data[[fill]])) +
+    geom_col() + 
+    geom_text(aes(label = .data[[count]]), 
+              colour = "white", position = position_stack(vjust = 0.5)) + 
+    scale_fill_manual(values=c('#3153a2', 'lightgrey')) + 
+    coord_flip() +
+    labs(title = title, 
+         subtitle = subtitle,
+         fill = fill) +
+    theme(legend.position = "bottom", 
+          axis.title.y = element_blank(),
+          axis.title.x = element_blank(),
+          # panel.border = element_blank(),
+          # axis.line = element_line(colour = "grey"),
+          # axis.ticks = element_line(color = "grey"),
+          # axis.text.y = element_text(size = 11),
+          # plot.subtitle = element_text(size = 9)) + 
+    ) +
+    guides(fill = guide_legend(title = fill))
+  
+  return(p)
+}
+
+plot_metric(position_summary, "position_category", "Count",
+            "preferred_foot",
+            "Comparison of Player Positions by Preferred Foot", 
+            "Counts of Player Positions of left- and right-footed players")
+
+
+```
+
+## Comparison of Market Value and Vague
+
+In this section we are about to analyze whether left-footed players have generally higher Market Value and Vague than their right-footed counterparts. We are going to achieve this by visualizing the mean of both attributes for left- and right-footed player.
+
+### Data Preprocessing
+
+First step involves adding new columns containing the average of Wage and Market Value. In order to achieve that, we need to group the dataset by the preferred_foot and calculating the mean of each option.
+
+```{r}
+library(dplyr)
+
+# Summarize data: average value and wage for each foot preference
+modified_df <- fifa_df_reduced %>%
+  group_by(preferred_foot) %>%
+  summarise(AVG_VALUE_EUR = mean(value_eur, na.rm = TRUE),
+            AVG_WAGE_EUR = mean(wage_eur, na.rm = TRUE)) %>%
+  ungroup()
+
+modified_df
+```
+
+```{r}
+library(tidyverse)
+
+
+# Plot for AVG_VALUE_EUR
+plot_metric(modified_df, "preferred_foot", "AVG_VALUE_EUR", "preferred_foot",
+            "Comparison of Market Value by Preferred Foot",
+            "Average market value (EUR) of left- and right-footed players")
+
+# Plot for AVG_VALUE_EUR
+plot_metric(modified_df, "preferred_foot", "AVG_WAGE_EUR", "preferred_foot",
+            "Comparison of Market Value by Preferred Foot",
+            "Average market value (EUR) of left- and right-footed players")
+
+
+```
+
+## Comparison of young players' potential
+
+We also compare whether young left-footed players have greater average potential than the right-footed.
+
+### Data preprocessing
+
+Only players born in 2004 are considered young. Therefore we reduce the dataset as follows.
+
+```{r}
+
+library(dplyr)
+
+# Summarize average potential for left-footed players
+left_footed_avg <- fifa_df_reduced %>%
+  filter(preferred_foot == 'Left' & format(dob, "%Y") == "2004") %>%
+  summarise(players = 'Left-footed', avg = mean(potential, na.rm = TRUE))
+
+# Summarize average potential for right-footed players
+right_footed_avg <- fifa_df_reduced %>%
+  filter(preferred_foot == 'Right' & format(dob, "%Y") == "2004") %>%
+  summarise(players = 'Right-footed', avg = mean(potential, na.rm = TRUE))
+
+# Combine both summaries
+avg_potential_df <- bind_rows(left_footed_avg, right_footed_avg)
+avg_potential_df
+  # select(short_name, dob, potential, everything())
+```
+
+### Plotting
+
+Finally, we visualize the means in a simple bar plot below.
+
+```{r}
+library(ggplot2)
+# Create a bar plot comparing the average potential for left and right-footed players
+ggplot(avg_potential_df, aes(x = players, y = avg, fill = players)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparison of Average Potential of Left- and Right-Footed Players",
+       x = "Footedness",
+  
+       y = "Average Potential") +
+  scale_fill_manual(values = c('#3153a2', "lightgrey")) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+## Conclusion
+
+We hypothesized that left-footed players generally play in more offensive positions that the right-footed players. As of the observation we performed in this document we can reject this hypothesis since the greatest proportion of left-footed players are playing in defensive positions.
+
+We also hypothesized that left-footed players have greater market value and wage on average than the right-footed players. Based on the analysis, we can declare this claim as correct but it remains questionable to what extent.
+
+Finally we set another hypothesis which says that young left-footed players have greater potential. After reviewing the average we can proclaim this final hypothesis as true if the observed difference is significant.
+
+### Hypothesis testing
+
+First hypothesis can be tested via **Chi-square test** for independence. The rest of the hypotheses may be tested by a simple **independent Two-sample T-test (Student's T-test)** since we are comparing the means of independent groups.
+
+```{r}
+library(dplyr)
+
+fifa_df_clean <- fifa_df_reduced %>%
+  filter(!is.na(preferred_foot) & !is.na(position_category))
+
+chisq.test(table(fifa_df_clean$preferred_foot, fifa_df_clean$position_category))
+
+t.test(value_eur ~ preferred_foot, data = fifa_df_clean)
+t.test(wage_eur ~ preferred_foot, data = fifa_df_clean)
+t.test(potential ~ preferred_foot, data = fifa_df_clean)
+```

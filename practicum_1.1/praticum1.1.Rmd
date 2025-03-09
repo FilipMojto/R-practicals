@@ -1,0 +1,295 @@
+# Practicum 1.1
+
+## Working directory
+
+```{r}
+getwd()
+```
+
+## Loading and observing dataset (Task 1, 2 )
+
+```{r}
+library(readr)
+# data <- read.csv("./players_22.csv")
+data <- read_csv("./players_22.csv")
+dim(data)
+```
+
+#### Column labels (Task 2)
+
+```{r}
+colnames(data)
+```
+
+#### Heterogoneous or homogeneous data
+
+If a column contains more than one type after the : it is heterogeneous, otherwise its homogeneous.
+
+```{r}
+str(data)
+```
+
+#### Can a tibble be replaced with a Matrix or Array?
+
+A matrix and array in R require all values to be of the same type. An array is similar but can have multiple dimensions. We can use \*sapply\*
+
+```{r}
+
+is_numeric <- sapply(data, is.numeric)
+all(is_numeric)
+```
+
+### Occurrences of each column type (task 3)
+
+```{r}
+
+# we get a named character vector of types of each column
+column_types <- sapply(data, class) 
+# we get the frequency table of each type
+type_counts <- table(column_types)    
+
+print(type_counts)
+```
+
+### Complete rows (task 4)
+
+```{r}
+# complete cases return a logical vector of TRUE/FALSE flags
+# that indicate whether row is complete
+complete_players <- complete.cases(data)
+print(complete_players[0:10])
+
+```
+
+#### Final count
+
+```{r}
+
+# now we get the sum of such rows
+print(sum(complete_players))
+```
+
+### Duplicates (task 5)
+
+#### Rows
+
+In order to collect duplicate flags we can apply \*duplicated()\* function.
+
+```{r}
+
+# logical vector of TRUE/FALSE to imply the duplicate row
+duplicate_rows <- duplicated(data)
+print(sum(duplicate_rows))
+```
+
+#### Columns
+
+We first transpose the matrix and then use an analogous method to detect duplicate columns.
+
+```{r}
+
+data_transposed <- as.data.frame(t(data))
+print(sum(duplicated(data_transposed)))
+
+```
+
+### Value range (task 6)
+
+#### Numeric columns
+
+```{r}
+library(dplyr)
+
+numeric_ranges <- data %>%
+  select(where(is.numeric)) %>%
+  # summarize the rows by applying this list of functions on every column
+  summarise(across(everything(), list(min = ~min(.), max = ~max(.))))
+
+# Filter numeric columns and get min and max
+# numeric_ranges <- data %>%
+#   select(where(is.numeric)) %>%  # Select only numeric columns
+#   summarise(across(everything(), list(min = ~min(.), max = ~max(.))))  # Find min and max
+
+# Print the result
+print(numeric_ranges)
+```
+
+#### Enum
+
+```{r}
+library(dplyr)
+
+category_choices <- data %>%
+  select(where(is.factor) | where(is.character)) %>%  # Select only factor and character columns
+  summarise(across(everything(), ~list(unique(.))))  # Apply unique() and return the result as a list
+
+print(category_choices)
+
+```
+
+### Examining the structure (task 7)
+
+```{r}
+View(data)
+```
+
+After examining the data, we have found the following information:
+
+-   **Player's personal attributes** (id, name, last_name, age, dob, etc.)
+
+-   **Player's club attributes** (club_name, club_position, etc.)
+
+-   **Player's performance attributes** (pace, shooting, skill curve, mentality_penalties, cm, rw, lw, etc.)
+
+-   **Other attributes** (urls, tags, etc.)
+
+    **Player's performance metrics** are often numeric columns that represent different aspects of the player's ability.
+
+    **Non-informative attributes** include mainly the urls, tags, id, nationality_id, name, long_name, etc.
+
+    #### Reordering the dataset
+
+    The very first columns must be some unique and important identifier, such as short_name. Then some additional personal attributes follow (dob, club_name, club_position, etc.). After these, the performance attributes follow and then the rest. Possible reordering example:
+
+```{r}
+
+library(dplyr)
+
+data_rearranged <- data %>%
+  select(short_name, dob, club_name, club_position, overall, shooting, passing, dribbling, everything())
+
+View(data_rearranged)
+```
+
+### Player with highest overall (task 8)
+
+```{r}
+
+library(dplyr)
+
+top_player <- data_rearranged %>%
+  select(short_name, dob, club_name, club_position, wage_eur, overall) %>%
+  filter(overall == max(overall))
+
+print(top_player)
+```
+
+### Left-footed players (task 9)
+
+```{r}
+library(dplyr)
+
+# Compute total number of players
+nrows <- nrow(data_rearranged)
+
+# Compute total left- and right-footed players
+left_count <- sum(data_rearranged$preferred_foot == "Left", na.rm = TRUE)
+right_count <- sum(data_rearranged$preferred_foot == "Right", na.rm = TRUE)
+
+left_footed <- data_rearranged %>%
+  select(short_name, dob, club_name, club_position, overall, preferred_foot) %>%
+  filter(preferred_foot == "Left") %>%
+  arrange(desc(overall)) %>%
+  mutate(
+    proportion_left = left_count / nrows,  # Proportion of left-footed players
+    proportion_right = right_count / nrows # Proportion of right-footed players
+  )
+
+print(left_footed)
+```
+
+### Left-footed players overall (task 10)
+
+After comparing the overall of left-foot and right-foot players we can see that left-foot players have slightly greater overall. The counts of each category, however, are not equal.
+
+```{r}
+library(dplyr)
+
+avg_overall <- data_rearranged %>%
+  filter(preferred_foot %in% c("Left", "Right")) %>%
+  group_by(preferred_foot) %>%
+  summarise(avg_overall = mean(overall, na.rm = TRUE), count = n())
+
+
+print(avg_overall)
+```
+
+### Youngest left-footed player (task 11)
+
+```{r}
+library(dplyr)
+
+youngest_left_foot_pl <- data_rearranged %>%
+  select(short_name, dob, club_name, overall, preferred_foot) %>%
+  filter(preferred_foot == 'Left' & overall > 80) %>%
+  arrange(desc(dob)) %>%
+  head(n=1)
+
+print(youngest_left_foot_pl)
+```
+
+### Least-valued players with greatest potential
+
+```{r}
+library(dplyr)
+library(lubridate)  # For handling dates
+
+# Ensure age column exists; if not, compute it from DOB
+data_rearranged <- data_rearranged %>%
+  mutate(age = ifelse("age" %in% names(.), age, as.numeric(difftime(Sys.Date(), ymd(dob), units = "days") / 365.25)))
+
+# Identify least-valued left-footed players with greatest potential improvement
+least_valued_players <- data_rearranged %>%
+  filter(preferred_foot == "Left", age < 35) %>%  # Under 35
+  arrange(value_eur, desc(potential)) %>%  # Sort by lowest value, highest potential
+  select(short_name, age, club_name, overall, potential, value_eur) %>%
+  head(n = 5)  # Select top 5
+
+print(least_valued_players)
+```
+
+### Other insights (task 13)
+
+#### Highest dribbling skill
+
+```{r}
+library(dplyr)
+
+highest_dribbling_skill_pl <- data_rearranged %>%
+  select(short_name, age, club_name, preferred_foot, dribbling) %>%
+  filter(preferred_foot == 'Left') %>%
+  arrange(desc(dribbling)) %>%
+  head(n=1)
+
+print(highest_dribbling_skill_pl)
+```
+
+#### Amount of left-footed players with shooting attributes over 85
+
+```{r}
+
+library(dplyr)
+
+shooting_attribute_pl <- data_rearranged %>%
+  select(short_name, age, club_name, preferred_foot, shooting) %>%
+  filter(preferred_foot == 'Left' & shooting > 85) %>%
+  arrange(desc(shooting)) %>%
+  count()
+
+print(shooting_attribute_pl)
+```
+
+#### Best left-player in bending the ball
+
+```{r}
+
+library(dplyr)
+
+best_curving_left_footed <- data_rearranged %>%
+  filter(preferred_foot == "Left") %>%
+  arrange(desc(skill_curve)) %>%
+  select(short_name, age, club_name, overall, skill_curve) %>%
+  head(1)  # Get the top player
+
+print(best_curving_left_footed)
+```
