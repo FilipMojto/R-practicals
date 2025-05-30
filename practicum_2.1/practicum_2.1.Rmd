@@ -1,0 +1,420 @@
+---
+title: "practicum_2.1"
+author: "Filip Mojto"
+date: "2025-03-18"
+output: html_document
+---
+
+## Loading dataset
+
+```{r}
+
+library(readr)
+print("Loading dataset from:")
+print(getwd())
+
+fifa_df_full = read_csv("./players_22.csv", show_col_types = FALSE)
+# fifa_df_full = fifa_df
+# View(fifa_df_full)
+
+```
+
+## Regression
+
+### Feature selection
+
+```{r}
+
+library(dplyr)
+
+
+# predictors <- c("dribbling", "passing", "skill_fk_accuracy", "defending", "shooting", "pace")
+predictors <- c("dribbling", "passing", "shooting", "skill_fk_accuracy", "physic")
+target <- "value_eur"
+
+cols <- append(predictors, target)
+
+fifa_df <- fifa_df_full %>%
+  select(all_of(cols))
+
+summary(fifa_df)
+```
+
+### Final overview
+
+```{r}
+
+View(fifa_df)
+
+```
+
+### EDA
+
+#### Missing values
+
+Some plots that we are going to use to visualize various aspects of the dataset, are sensitive to **missing values (NaNs)**. For this reason, we are going to identify the proportion of such rows and, based on the results, take an appropriate action.
+
+##### Overview
+
+```{r}
+library(dplyr)
+
+nrows <- nrow(fifa_df)
+
+fifa_df %>%
+  # here across applies function to each column
+  # is.na(.) creates logical vectors, where TRUE indicates NaN
+  # sum() sums all TRUE values in vector
+  # paste() concentates two strings having " " as a separator (paste0() has separator "")
+  summarise(across(everything(), ~round(sum(is.na(.)) / nrows * 100, 2))) %>%
+  rename_with(~ paste0(., "_na_%"))
+
+```
+
+##### Action
+
+Because the proportion of NaNs is relatively low we are going to remove all such rows.
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+fifa_df <- fifa_df %>%
+  drop_na()
+
+```
+
+#### Distributions
+
+Now we are going to analyze distributions of each predictor with respect to our target. We are also going to define the following function which we will use throughout the entire process.
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+plot_metric <- function(df, X_col, Y_col, plot_type = "scatter", curve_method = "lm") {
+  p <- if (plot_type == 'histogram') ggplot(df, aes(x = .data[[X_col]])) else  ggplot(df, aes(x = .data[[X_col]], y = .data[[Y_col]]))
+  # Generate a random color for histogram
+  random_color <- rgb(runif(1), runif(1), runif(1))  # Random RGB color
+  
+  # Select the plot type dynamically
+  p <- p + switch(plot_type,
+    "scatter" = geom_point(color = random_color),
+    "boxplot" = geom_boxplot(aes(group = .data[[X_col]])),  # Group by X_col
+    "line" = geom_line(),
+    "violin" = geom_violin(aes(group = .data[[X_col]])),  # Group required for violin plots too
+    "histogram" = geom_histogram(aes(x = .data[[X_col]]), bins = 30, fill = random_color, alpha = 0.5),  # Only x is needed here
+    stop("Invalid plot_type! Choose from 'scatter', 'boxplot', 'line', 'violin', or 'histogram'.")
+  ) + theme_minimal()
+  
+  if (plot_type == 'scatter'){
+    # p <- p + geom_smooth(method = "loess", color = "red", se = FALSE)
+    p <- p + geom_smooth(method = curve_method, formula = y ~ x, color = "red", se = FALSE)
+  }
+  
+  print(p)  # Explicitly print the plot
+}
+
+```
+
+##### Checking linearity
+
+We can check how much the relationship between our target and each individual predictor is linear by utilizing **Scatterplot**.
+
+```{r}
+library(ggplot2)
+
+for (predictor in predictors){
+  plot_metric(fifa_df, predictor, target, "scatter", curve_method = "lm")
+}
+
+```
+
+```{r}
+
+# Use the `pairs()` function to visualize relationships between multiple variables
+# pairs(fifa_df[, append(predictors, target)])
+
+pairs(fifa_df[, append(predictors, target)],
+      panel = panel.smooth,
+      col = "blue",
+      pch = 19)
+```
+
+From the visualizations above, we can tell that the relationship between the predictors and target is not perfectly linear. This is because the target (value_eur) has a weaker tendency to grow with the particular ability. Only for highly-skilled players the market value starts to grow. This means that the higher skill doesn't result in higher market value.
+
+##### Correlation
+
+```{r}
+
+# Iterate over predictors and calculate the correlation
+for (predictor in predictors) {
+  correlation <- cor(fifa_df[[predictor]], fifa_df[[target]], use = "complete.obs")
+  cat("Correlation between", predictor, "and", target, ":", correlation, "\n")
+}
+```
+
+```{r}
+
+cor(fifa_df[['dribbling']], fifa_df[['passing']], use = "complete.obs")
+cor(fifa_df[['dribbling']], fifa_df[['shooting']], use = "complete.obs")
+cor(fifa_df[['shooting']], fifa_df[['passing']], use = "complete.obs")
+
+```
+
+##### Checking normality
+
+Now we can check which predictors have the most normal distributions with respect to our target. This time we are going to utilize **Histogram**.
+
+```{r}
+
+for (predictor in predictors){
+  plot_metric(fifa_df, predictor, target, "histogram")
+}
+```
+
+### Outliers
+
+```{r}
+
+for (predictor in predictors){
+  plot_metric(fifa_df, predictor, target, "boxplot")
+}
+
+```
+
+```{r}
+
+# Standardize the value_eur column (other predictors can also be scaled similarly)
+fifa_df$value_eur_scaled <- scale(fifa_df$value_eur)
+
+# Assuming predictors is a vector of column names (as strings) and target is a string
+for (predictor in predictors) {
+  # Construct the formula dynamically
+  formula <- as.formula(paste('value_eur_scaled', "~", predictor))
+
+  # Fit the linear model``
+  lm_model <- lm(formula, data = fifa_df)
+
+  # Print the summary of the model
+  print(summary(lm_model))
+
+  # Plot residuals
+  plot(lm_model$residuals, main = paste("Residuals for", predictor), ylab = "Residuals", xlab = "Index")
+  abline(h = 0, col = "red")  # Add a horizontal line at 0 for reference
+
+  print(var(lm_model$residuals))
+  
+  plot(lm_model$fitted.values, lm_model$residuals, 
+       main = paste("Residuals vs Fitted for", predictor), 
+       xlab = "Fitted Values", 
+       ylab = "Residuals")
+  abline(h = 0, col = "red")
+}
+```
+
+## Conclusion
+
+### Selected predictors
+
+From the analysis we performed we select the following combination of predictors:
+
+1)  **dribbling**
+
+2)  **passing**
+
+3)  **shooting**
+
+as these fulfill the the requirements of regression models the most.
+
+### Selected model
+
+Based on the requirements of available regression models, we've decided to opt for **polynomial regression** as the relationships between predictors and target are not linear. Also we are predicting **continuous** data, therefore Poisson Regression is not a valid choice.
+
+## Classification
+
+### Feature selection
+
+```{r}
+
+library(dplyr)
+
+
+predictors_cls <- c("dribbling", "passing", "skill_fk_accuracy", "defending", "shooting", "pace",
+                    "skill_long_passing", "skill_ball_control", "movement_acceleration",
+                    "movement_sprint_speed")
+
+offensive_positions <- c("LF", "CF", "RF", "LW", "RW", "LS", "ST", "RS")
+defensive_positions <- c("LWB", "RWB", "LCB", "CB", "RCB", "LB", "RB")
+midfielder_positions <- c("LM", "LAM", "CM", "RM", "RAM", "CAM", "CDM", "DM", "LDM", "RDM")
+
+fifa_df_cls <- fifa_df_full %>%
+  mutate(position_ctg = case_when(
+    player_positions %in% offensive_positions ~ 'Offensive',
+    player_positions %in% defensive_positions ~ 'Defensive',
+    player_positions %in% midfielder_positions ~ 'Midfielder',
+    TRUE ~ 'Other'
+  ))
+target_cls <- 'position_ctg'
+
+
+cols <- append(predictors_cls, target_cls)
+
+fifa_df_cls <- fifa_df_cls %>%
+  filter(position_ctg == 'Offensive' | position_ctg == 'Defensive') %>%
+  # this is because other package overrides dplyr
+  dplyr::select(all_of(cols))  # Use explicit namespace
+
+# Convert `position_ctg` to a inary factor and then numeric
+fifa_df_cls <- fifa_df_cls %>%
+  mutate(position_ctg = as.numeric(factor(position_ctg, levels = c("Defensive", "Offensive"))) - 1)
+
+
+summary(fifa_df_cls)
+```
+
+```{r}
+
+# str(fifa_df_cls)
+
+sum(is.na(fifa_df_cls$dribbling))
+sum(is.na(fifa_df_cls$passing))
+sum(is.na(fifa_df_cls$shooting))
+sum(is.na(fifa_df_cls$position_ctg))
+```
+
+### Checking normality of predictors
+
+We are also going to check the normality of our potential predictors. We visualize the normality by using histograms.
+
+```{r}
+
+library(ggplot2)
+
+for (predictor in predictors_cls){
+  p <- ggplot(fifa_df_cls, aes(x = .data[[predictor]])) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "lightblue", color = "black") +
+  geom_density(color = "red", size = 1) +
+  ggtitle(paste("Histogram and Density Curve of", predictor)) +
+  theme_minimal()
+  
+  print(p)
+}
+
+```
+
+### Checking linearity using logistic regression
+
+Linear regression requires linear relationship between predictors and the log-odds of the response variable. To verify this, we are going to fit the model with the selected predictors.
+
+#### Fitting model
+
+```{r}
+
+# Example logistic regression model
+log_reg_model <- glm(position_ctg ~ dribbling + passing + shooting + defending, 
+                     family = binomial, data = fifa_df_cls)
+summary(log_reg_model)
+```
+
+#### Making predictions
+
+```{r}
+
+library(ggplot2)
+
+fifa_df_cls$predicted_prob <- predict(log_reg_model, type = "response")
+
+for (predictor in predictors_cls) {
+  p <- ggplot(fifa_df_cls, aes(x = .data[[predictor]], y = log(predicted_prob / (1 - predicted_prob)))) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", color = "red") +
+    ggtitle(paste("Log-Odds vs", predictor)) +
+    theme_minimal()
+  print(p)
+}
+
+pairs(fifa_df[, append(predictors, target)],
+      panel = panel.smooth,
+      col = "blue",
+      pch = 19)
+```
+
+```{r}
+
+# Example LDA model
+library(ggplot2)
+library(MASS)
+lda_model <- lda(position_ctg ~ dribbling + passing + shooting, data = fifa_df_cls)
+summary(lda_model)
+
+# Generate predictions from LDA
+lda_predictions <- predict(lda_model)
+
+# Extract posterior probabilities (probability of being in each class)
+fifa_df_cls$predicted_prob <- lda_predictions$posterior[, 2]
+
+ggplot(fifa_df_cls, aes(x = dribbling, y = predicted_prob)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  ggtitle("Effect of Dribbling on Probability of Offensive Role") +
+  xlab("Dribbling Skill") +
+  ylab("Predicted Probability of Being Offensive") +
+  theme_minimal()
+```
+
+### Checking homoscedasticity
+
+LDA model requires homoscedasticity - variance of residuals is contant across all levels of independent variables.
+
+```{r}
+
+# Check normality of predictors within each group (Offensive and Defensive)
+library(ggplot2)
+
+# Fit LDA model
+lda_model <- lda(position_ctg ~  passing + skill_fk_accuracy + defending, data = fifa_df_cls)
+
+# Get predictions
+lda_predictions <- predict(lda_model)
+
+# Calculate residuals (observed - predicted probabilities)
+fifa_df_cls$residuals <- fifa_df_cls$position_ctg - lda_predictions$posterior[, 2]
+
+# Plot residuals vs. predicted probability
+ggplot(fifa_df_cls, aes(x = lda_predictions$posterior[, 2], y = residuals)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  ggtitle("Residuals vs. Predicted Probability") +
+  xlab("Predicted Probability of Being Offensive") +
+  ylab("Residuals") +
+  theme_minimal()
+```
+
+### Outliers
+
+```{r}
+library(ggplot2)
+
+for (predictor in predictors_cls){
+  plot_metric(fifa_df_cls, target_cls, predictor, 'boxplot')
+}
+```
+
+### Conclusion
+
+#### Selected predictors
+
+Based on the analysis we performed, we have decided to select following features as predictors:
+
+1)  **passing**
+
+2)  **skill_fk_accuracy**
+
+3)  **defending**
+
+4)  **shooting**
+
+#### Selected model
+
+We have decided to choose **Logistic Regression** as data are mostly linearly separable and homoscedasticity is not required.

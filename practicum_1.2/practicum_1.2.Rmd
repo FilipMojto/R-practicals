@@ -9,17 +9,23 @@ output: html_notebook
 
 ```{r}
 library(readr)
-
+print("Reading dataset from:")
 getwd()
 
 fifa_df = read_csv("players_22.csv")
-View(fifa_df)
 
+```
+
+### Viewing dataset
+
+```{r}
+
+View(fifa_df)
 ```
 
 ### Reducing dataset
 
-Here we reduce the dataset by filtering the columns we are going to need in this practicum.
+Here we reduce the dataset by filtering only the columns we are going to need in this practicum.
 
 ```{r}
 
@@ -97,12 +103,12 @@ fifa_df_reduced <- fifa_df_reduced %>%
     TRUE ~ "Other"
   ))
 
-fifa_df
+fifa_df_reduced['position_category']
 ```
 
 ### Grouping the buckets
 
-Second step involves grouping the buckets and calculating the count for each.
+Second step involves grouping the buckets and calculating the count of preferred_foot for each.
 
 ```{r}
 

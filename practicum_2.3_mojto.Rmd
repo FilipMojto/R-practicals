@@ -1,0 +1,682 @@
+---
+title: "practicum_2.3"
+author: "Filip Mojto"
+date: "2025-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Start
+
+### Libs&Conflicts
+
+```{r}
+
+library(tidyverse)
+library(conflicted)
+library(corrplot)
+library(purrr)
+library(caret)
+library(nnet)
+library(pROC)
+
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lag", "dplyr")
+conflict_prefer("select", "dplyr")
+
+
+```
+
+### Loading dataset
+
+```{r}
+
+paste("Loading dataset from '", getwd(), "'")
+
+fifa_df_full = read_csv("players_22.csv", show_col_types = FALSE)
+
+```
+
+### Viewing dataset
+
+```{r}
+
+#View(fifa_df_full)
+```
+
+## EDA
+
+### Feature engineering
+
+#### Feature selection
+
+```{r}
+
+fifa_df <- fifa_df_full %>%
+  rename(
+    mvmnt_spd = movement_sprint_speed,
+    mvmnt_acc = movement_acceleration
+  )
+
+candidate_predictors <- c("pace", "mvmnt_acc",
+                "mvmnt_spd",
+                "movement_agility",
+                "movement_balance",
+                "power_jumping",
+                "power_stamina",
+                "power_strength",
+                "dribbling",
+                "shooting",
+                "passing",
+                "defending")
+target <- "player_positions"
+cols <- append(candidate_predictors, target)
+
+fifa_df <- fifa_df %>%
+  select(all_of(cols))
+
+```
+
+#### Feature transformation
+
+##### Handling missing values
+
+```{r}
+
+nrows <- nrow(fifa_df)
+
+
+get_nan_percentage <- function(){
+  nans <- fifa_df %>%
+    summarise(across(everything(), ~round(sum(is.na(.)) / nrows * 100, 2))) %>%
+    rename_with(~paste0(., "_%"))
+  print(nans)
+}
+  
+get_nan_percentage()
+
+```
+
+```{r}
+
+cat("Rows before: ", nrows, "\n")
+
+fifa_df <- fifa_df %>%
+  drop_na()
+
+cat("Rows after: ", nrow(fifa_df))
+
+get_nan_percentage()
+
+```
+
+##### Player positions
+
+```{r}
+
+# Define offensive and defensive positions
+offensive_positions <- c("LF", "CF", "RF", "LW", "RW", "LS", "ST", "RS")
+defensive_positions <- c("LWB", "RWB", "LCB", "CB", "RCB", "LB", "RB")
+midfielder_positions <- c("LM", "LAM", "CM", "RM", "RAM", "CAM", "CDM", "DM", "LDM", "RDM")
+
+fifa_df <- fifa_df %>%
+  mutate(position_ctg = case_when(
+    player_positions %in% offensive_positions ~ 'Offensive',
+    player_positions %in% defensive_positions ~ 'Defensive',
+    player_positions %in% midfielder_positions ~ 'Midfielder',
+    TRUE ~ 'Other'
+  ))
+
+fifa_df$position_ctg <- as.factor(fifa_df$position_ctg)
+
+target <- 'position_ctg'
+cols <- append(candidate_predictors, target)
+  
+summary(fifa_df)
+
+```
+
+##### Normalization
+
+```{r}
+
+fifa_df <- fifa_df %>%
+  mutate(across(where(is.numeric), ~ (. - mean(.)) / sd(.)))
+
+fifa_df <- fifa_df %>%
+  filter(if_all(where(is.numeric), ~ abs((. - mean(.)) / sd(.)) < 3))
+  # mutate(across(where(is.numeric), ~ abs((. - mean(.)) / sd(.)) > 3, .names = "outlier_{col}"))
+
+fifa_df
+
+```
+
+### Checking independence
+
+```{r fig.width=10, fig.height=10}
+
+# use = "pairwise.complete.obs" ensures that pairwise correlations ignore NA values (i.e., missing values are removed on a per-pair basis
+# Save as PNG with larger dimensions
+# png("corrplot.png", width = 2000, height = 2000, res = 150)  
+# For PNG output (recommended for large matrices)
+
+show.corrplot <- function(matrix){
+  p <- corrplot(
+  matrix,
+  method = 'color',
+  type = 'lower',
+  tl.cex = 1, cl.cex = 1, addCoef.col = "black", number.cex = 1
+)
+  
+  print(p)
+}
+
+cor_matrix <- cor(fifa_df[,candidate_predictors])
+show.corrplot(cor_matrix)
+
+```
+
+Based on the correlation matrix displayed above, we've decided to remove the following attributes:
+
+1)  **mvmnt_acc**
+
+2)  **mvmnt_spd**
+
+3)  **movement_agility**
+
+```{r fig.width=10, fig.height=10}
+
+predictors_to_remove <- c('mvmnt_acc', 'mvmnt_spd', 'movement_agility', 'dribbling')
+
+predictors <- setdiff(candidate_predictors, predictors_to_remove)
+
+cols <- append(predictors, target)
+
+fifa_df <- fifa_df %>%
+  select(all_of(cols))
+
+print(colnames(fifa_df))
+
+cor_matrix <- cor(fifa_df[,predictors])
+
+show.corrplot(cor_matrix)
+
+```
+
+### Checking normality
+
+#### Density plot
+
+```{r}
+
+show.scatterplot <- function(df, cols){
+  
+  plot_list <- map(cols, ~ ggplot(
+    data = df,
+    mapping = aes(x = .data[[.x]])
+  ) + geom_density(fill = 'green') +
+    theme_minimal())
+  
+  walk(plot_list, print)
+}
+
+show.scatterplot(fifa_df, predictors)
+
+```
+
+#### QQ Plots
+
+```{r}
+
+show.qqplots <- function(data, cols) {
+  plots <- map(cols, ~ ggplot(data, aes(sample = .data[[.x]])) +  # Corrected aes()
+                 stat_qq() +
+                 stat_qq_line(color = "red") +
+                 ggtitle(paste0("Distribution of predictor ", .x)) +
+                 theme_minimal())
+  
+  walk(plots, print)
+}
+
+# Usage
+show.qqplots(data = fifa_df, cols = predictors)
+
+```
+
+#### Data in each class
+
+Both LDA and QDA require **normal distribution** for the data in each class.
+
+```{r}
+
+show.density.plot <- function(df, attribute) {
+  p <- ggplot(df, aes(x = .data[[attribute]], fill = position_ctg, color = position_ctg)) +
+    geom_density(alpha = 0.4) +  # Use transparency for overlap visibility
+    ggtitle(paste0("Distribution of ", attribute, " across Classes")) +
+    theme_minimal() +
+    labs(fill = "Player Category", color = "Player Category") +
+    scale_fill_manual(values = c("red", "blue", "green", "purple")) +  # Custom colors
+    scale_color_manual(values = c("red", "blue", "green", "purple"))
+  
+  return(p)
+}
+
+normality_plots <- map(predictors, ~show.density.plot(df = fifa_df, attribute = .x))
+
+walk(normality_plots, print)
+```
+
+### Checking covariance
+
+LDA requires **equal covariance matrices** for all classes, meaning that the spread of each class is assumed to be the same. Otherwise QDA is recommended.
+
+```{r fig.width=10, fig.height=10}
+
+
+library(tidyverse)
+library(reshape2)  # For melting the covariance matrix
+library(ggplot2)   # For plotting
+
+show.covariance <- function(df, class) {
+  # Filter and clean data
+  df_filtered <- df %>%
+    filter(position_ctg == class) %>%
+    drop_na()
+  
+  # Calculate covariance matrix
+  cov_matrix <- cov(df_filtered[, predictors])
+  
+  # Convert covariance matrix to long format for ggplot
+  cov_melted <- melt(cov_matrix)
+  
+  # Create heatmap with values
+  p <- ggplot(cov_melted, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = round(value, 2)), color = "black", size = 3) +  # Display values
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1, 1), space = "Lab",
+                         name = "Covariance") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    coord_fixed() +
+    ggtitle(paste("Covariance Matrix for", class, "Players"))
+  
+  # print(p)
+  
+  # Return the covariance matrix (optional)
+  return(p)
+}
+
+# Assuming 'predictors' is defined somewhere in your code
+# predictors <- c("var1", "var2", ...) 
+
+classes <- c('Offensive', 'Defensive', 'Midfielder', 'Other')
+
+# Create plots for each class
+cov_map_plots <- map(classes, ~show.covariance(df = fifa_df, class = .x))
+walk(cov_map_plots, print)
+# show.covariance(df = fifa_df, class = 'Offensive')
+
+
+```
+
+### Checking outliers
+
+```{r}
+
+show.boxplot <- function(data, cols, target){
+  plots <- map(cols, ~ggplot(
+    data,
+    aes(x = .data[[target]], y = .data[[.x]])) +
+      geom_boxplot(aes(group = .data[[target]])) +
+      theme_minimal()
+  )
+  
+  walk(plots, print)
+}
+
+show.boxplot(data = fifa_df, cols = predictors, target = target)
+
+```
+
+## Training, Tuning and Testing
+
+### Logistic Regression
+
+```{r}
+
+# decay is a regularization parameter (L2 penalty) used in multinomial logistic regression (multinom from the nnet package). It prevents overfitting by penalizing large coefficient values.
+# Regularization is a technique that adds a penalty to large weights (coefficients) to reduce model complexity and improve generalization.
+
+# λ (decay) controls the penalty strength.
+#A higher decay value increases the penalty, leading to smaller coefficients.
+#A lower decay value allows larger coefficients and reduces regularization.
+
+# Each coefficient represents the change in the log-odds of being in a given category (compared to the reference category) for a one-unit increase in that predictor. Positive values indicate growth in the probability (log odds), whereas
+# negative values decrease the probability.
+# Intercept - represents the baseline log-odds of a player belonging to that category (e.g., Midfielder) when all predictors are zero.
+
+# Standard error - each coefficient has an associated standard error, which measures the variability of the estimated coefficient. Larger standard errors indicate more uncertainty in the coefficient estimates.Smaller standard errors indicate more confidence in the estimates.
+
+# Residual Deviance - lower values indicate a better fit, how well the model
+# predicts the data
+# D=−2×∑log(L), where L is the likelihood of the model given the data.
+# Compared to a null model (only intercept, no predictors):
+#If Residual Deviance is much lower, the predictors improve classification.
+#If it’s close to the null deviance, the predictors do not improve classification much.
+
+# AIC - a lower values indicate a better model, it balances model fit and its
+# complexity, lower values suggest best balance between accuracy and simplicity.
+# Higher values - too complex or poor fit.
+# AIC=D+2k
+
+#Larger standard errors indicate more uncertainty in the coefficient estimates.
+#Smaller standard errors indicate more confidence in the estimates.
+
+formula <- as.formula(paste("position_ctg ~", paste(predictors, collapse = " + ")))
+log_model <- train(formula, 
+                   data = fifa_df,
+                   method = "multinom", 
+                   trControl = trainControl(method = "cv", number = 5),
+                   tuneGrid = expand.grid(decay = c(0.001, 0.01, 0.1)),
+                   metric = "Accuracy")  # Regularization parameter
+# if the log-likelihood values are not changing significantly, the model
+# has reached convergence
+#
+
+#In multinomial logistic regression, one class is chosen as the reference category (baseline), and all other classes are compared against it. In this case, "Defensive" is the reference category, meaning all coefficient values describe how different Midfielder, Offensive, and Other players are compared to Defensive players.
+# Check model summary
+summary(log_model)
+```
+
+We can see that at each iteration model converged. If it doesn't converge we should adjust decay parameter, normalize data or increase iterations. Also the **log-likelihood loss function** is improving, lower values mean better fit but too low values may lead to overfitting.
+
+Features like *power_jumping* or *power_stamina* have coefficient values close to 0, meaning they have only little effect on classification and should be removed.
+
+Defending have quite high negative coefficients meaning that **higher defending ability reduces the chance of being in any class other than Defensive**.
+
+### SVM
+
+```{r}
+library(caret)
+library(e1071)
+
+# Define hyperparameter grid with both sigma and C
+# C (Cost), controls trade-off between maximizing the margin
+# and minimizing the classification errors
+# lower C means higher margin, but permitting more missclassifcations
+# higher C aims for perfect classification but there is risk of overfitting
+# sigma - (RBF kernel width) controls the spread of radial basis function (RBF)
+# A small sigma results in high variance (overfitting), while large sigma results
+# in underfitting
+# degree (polynomial kernel degree), used only for svmPoly, higher values create
+# more complex decision boundaries
+# scale - determines whether to normalize the data before training
+
+# svm_grid_rbf <- expand.grid(sigma = c(0.01, 0.1),  # Sigma for RBF kernel
+#                         C = c(0.1, 1))  # Cost parameter
+
+svm_control <- trainControl(method = "cv", 
+                            number = 5, 
+                            classProbs = TRUE)  # Enable probability estimation
+
+# Train SVM with polynomial kernel WITH probability estimates
+svm_grid_poly <- expand.grid(degree = 2,  # Simpler polynomial
+  scale = 0.01,  # Smaller scale
+  C = 1)  # Moderate regularization)
+
+
+svm_model_poly <- train(
+  formula,
+  data = fifa_df,
+  method = "svmPoly",
+  trControl = svm_control,  # Use the updated trainControl
+  tuneGrid = svm_grid_poly,
+  metric = "Accuracy",
+  probability = TRUE
+)
+
+
+# svm_model_poly <- train(
+#   formula,
+#   data = fifa_df,
+#   method = "svmPoly",
+#   trControl = trainControl(method = "cv", 
+#                           number = 5),  # Enable class probabilities
+#   tuneGrid = svm_grid_poly,
+#   metric = "Accuracy",
+#   probability = TRUE  # Critical for SVM probability estimates
+# )
+
+print(svm_model_poly)
+```
+
+**Accuracy** means proportion of correctly classified samples. Higher is better. **Kappa** measures agreement between the predicted and actual classifications, accounting for chance. Higher is better.
+
+Tuning parameter 'scale' was held constant at 0.1
+
+After performing the hyper-parameter tuning, we can see that higher value of degree (3) was preferred over the lower (higher captures more complex relationships). The stronger regularization value (1) was also preferred. The best model had the total accuracy of 0.72 and highest kappa of 0.48.
+
+### LDA / QDA
+
+```{r}
+
+library(caret)
+set.seed(123)  # For reproducibility
+
+# Define train control for cross-validation
+train_control <- trainControl(method = "cv", number = 5)
+
+# Train LDA model using caret
+lda_model <- train(
+  formula,
+  data = fifa_df,
+  method = "lda",
+  trControl = train_control
+)
+
+# Print results
+print(lda_model)
+
+set.seed(123)
+
+qda_model <- train(
+  formula,
+  data = fifa_df,
+  method = "qda",
+  trControl = train_control
+)
+
+print(qda_model)
+```
+
+```{r}
+# fifa_df$position_ctg <- as.factor(fifa_df$position_ctg)
+# str(fifa_df$position_ctg)  # Should show 'Factor' with levels
+# levels(fifa_df$position_ctg)  # Should return e.g., "Offensive", "Defensive", etc.
+```
+
+### ROC Curves
+
+```{r}
+
+# ROC Curve
+# y axis - sensitivity (true positives)
+# x axis - specificity (false positives)
+
+# library(caret)
+library(pROC)
+library(ROCR)
+set.seed(123)
+
+show.ROC <- function(model_probs, model_name){
+  # Loop through each class and plot ROC
+  classes <- levels(fifa_df$position_ctg)
+  colors <- c("blue", "red", "green", "purple")  # Adjust based on number of classes
+  
+  par(mfrow = c(1, 1))  # Reset plot layout
+  plot(NA, xlim = c(1, 0), ylim = c(0, 1), xlab = "1 - Specificity", ylab = "Sensitivity", main = paste0("ROC Curves (One-vs-All) of ", model_name))
+  for (i in seq_along(classes)) {
+    roc_curve <- roc(
+      response = fifa_df$position_ctg == classes[i],
+      predictor = model_probs[[classes[i]]]
+    )
+    lines(roc_curve, col = colors[i], lwd = 2)
+    print(paste("AUC for", classes[i], ":", auc(roc_curve)))
+  }
+  legend("bottomright", legend = classes, col = colors, lwd = 2)
+}
+
+# Train LDA model
+# train_control <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+# lda_model <- train(formula, data = fifa_df, method = "lda", trControl = train_control)
+
+# Get predicted probabilities (one column per class)
+log_probs <- predict(log_model, fifa_df, type = "prob")
+svm_probs <- predict(svm_model_poly, fifa_df, type = "prob")
+lda_probs <- predict(svm_model_poly, fifa_df, type = "prob")
+qda_probs <- predict(qda_model, fifa_df, type = "prob")
+
+
+probs <- list(log = log_probs, svm = svm_probs, lda = lda_probs, qda = qda_probs)
+
+# Apply the function to each model
+imap(probs, show.ROC) 
+
+
+
+```
+
+### Optimal probability cut-off
+
+```{r}
+
+#Suppose the optimal cut-off for "Offensive" is 0.65.
+#A player with P(Offensive) = 0.70 is classified as Offensive.
+#A player with P(Offensive) = 0.50 is classified as Not Offensive.
+
+for (class in classes){
+  # For binary classification (one class vs. rest)
+  roc_curve <- roc(
+    response = fifa_df$position_ctg == class,  # Example for "Offensive" class
+    predictor = lda_probs[[class]]            # Predicted probabilities for "Offensive"
+  )
+  
+  # Get optimal cut-off (Youden’s Index)
+  optimal_cutoff <- coords(roc_curve, "best", ret = "threshold", best.method = "youden")
+  print(paste("Optimal Cut-off:", optimal_cutoff))
+}
+```
+
+### Thresholds
+
+```{r, echo=FALSE}
+
+library(knitr)
+
+analyze_model_thresholds <- function(model,
+                                     model_name,
+                                    data, 
+                                    class_col, 
+                                    predictors, 
+                                    pos_class = NULL) {
+  # Load required packages
+  require(pROC)
+  require(caret)
+  
+  # Get predicted probabilities
+  probs <- predict(model, newdata = data, type = "prob")
+  
+  # Get class names (handle binary and multiclass cases)
+  if (is.null(pos_class)) {
+    classes <- colnames(probs)
+  } else {
+    classes <- pos_class
+  }
+  
+  results <- list()
+  
+  for (class in classes) {
+    cat("\n=== Interpretation of ", model_name, " for class:", class, "===\n")
+    
+    # Get probabilities for current class
+    class_probs <- probs[[class]]
+    
+    # Calculate ROC curve and optimal cutoff
+    roc_curve <- roc(response = data[[class_col]] == class, 
+                     predictor = class_probs)
+    cutoff <- coords(roc_curve, "best", ret = "threshold", best.method = "youden")$threshold
+    
+    cat("Optimal probability cutoff for", class, ":", round(cutoff, 3), "\n")
+    
+    class_results <- list()
+    
+    # Analyze each predictor
+    for (predictor in predictors) {
+      # Get predictor values for true members of this class
+      class_values <- data[data[[class_col]] == class, predictor]
+      
+      # Calculate thresholds
+      threshold_low <- quantile(class_values, probs = cutoff, na.rm = TRUE)
+      threshold_high <- quantile(class_values, probs = 1 - cutoff, na.rm = TRUE)
+      
+      # Store results
+      predictor_result <- list(
+        cutoff = cutoff,
+        threshold_low = threshold_low,
+        threshold_high = threshold_high,
+        interpretation_low = paste0(round(100*cutoff, 1), "% of ", class, 
+                                   " players have ", predictor, " ≤ ", 
+                                   round(threshold_low, 1)),
+        interpretation_high = paste0(round(100*(1-cutoff), 1), "% of ", class, 
+                                    " players have ", predictor, " > ", 
+                                    round(threshold_high, 1))
+      )
+      
+      # Print interpretation
+      cat("Predictor:", predictor, "\n")
+      cat("-", predictor_result$interpretation_low, "\n")
+      cat("-", predictor_result$interpretation_high, "\n\n")
+      
+      class_results[[predictor]] <- predictor_result
+    }
+    
+    results[[class]] <- class_results
+  }
+  
+   # Page break for R Markdown
+  cat("\\newpage")
+  
+  # Return invisible list with all results for programmatic access
+  # invisible(results)
+}
+
+# List of models
+# models <- list(log = log_model, svm = svm_model_poly, lda = lda_model, qda = qda_model)
+models <- list(log = log_model)
+
+# Apply function correctly with required parameters
+imap(models, ~analyze_model_thresholds(.x, .y, fifa_df, "position_ctg", predictors))
+
+```
+
+### Type I and II errors
+
+We select lowest misclassification rate because:
+
+-   When **all errors are equally costly** (e.g., spam detection, image classification).
+
+-   When the class distribution is **balanced** (similar proportions of classes).
+
+-   Optimizes for the **highest overall correctness**.
+
+-   Simple and interpretable, but **risky for imbalanced data** (e.g., a model could achieve 95% accuracy by always predicting the majority class).
+
+Type I error - when false alarms are critical (e.g. medical diagnosis, fraud detection).
+
+Type II error - when **missing a positive case is costly** (e.g., cancer screening, security threats).
+
+## Conclusion

@@ -1,0 +1,283 @@
+---
+title: "practicum_2.2"
+author: "Filip Mojto"
+date: "2025-03-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Practicum 2.2
+
+## Initial actions
+
+### Libraries and conflicts
+
+```{r}
+
+library(tidyverse)
+library(conflicted)
+library(corrplot)
+library(purrr)
+library(caret)
+
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lag", "dplyr")
+
+```
+
+### Loading dataset
+
+```{r}
+
+paste("Loading dataset from '", getwd(), "'")
+
+fifa_df_full <- read_csv("./players_22.csv", show_col_types = FALSE)
+```
+
+### Viewing the dataset
+
+```{r}
+
+
+View(fifa_df_full)
+# colnames(fifa_df_full)
+```
+
+## Hypothesis formulation
+
+*We hypothesize that a striker’s performance on the field, whether measured by their **overall score** or monetary value (**value_eur**), depends on their technical skills, attacking and defending abilities, raw power, mentality, and stamina. But which ones to take and how to assess their relationship?*
+
+## EDA
+
+### Feature selection
+
+```{r}
+
+target <- "overall"
+# predictors <- c("pace", "shooting", "passing", "dribbling", "defending",
+#                 "physic")
+
+predictors <- c("pace", "movement_acceleration",
+                "movement_sprint_speed",
+                "movement_agility",
+                "movement_balance",
+                "power_jumping",
+                "power_stamina",
+                "power_strength",
+                "dribbling",
+                "shooting",
+                "passing",
+                "defending")
+
+cols <- append(predictors, target)
+
+fifa_df <- fifa_df_full %>%
+  select(all_of(cols))
+
+View(fifa_df)
+
+```
+
+### Feature transformation
+
+#### NaN percentage
+
+```{r}
+
+nrows <- nrow(fifa_df)
+
+
+fifa_df %>%
+  summarise(across(everything(), ~round(sum(is.na(.)) / nrows * 100, 2 ))) %>%
+  rename_with(~paste0(., "_%"))
+            
+          
+
+```
+
+#### Handling NaNs
+
+```{r}
+
+fifa_df <- fifa_df %>%
+  drop_na()
+
+```
+
+### Distribution analysis
+
+```{r}
+
+plot_list <- map(predictors, ~ggplot(data = fifa_df, mapping = aes(x = .data[[.x]], y = .data[[target]])) +
+    geom_point(alpha = 0.1, color = "red") +
+    geom_smooth(method = "lm", color = "blue", se = FALSE) +
+    ggtitle(paste("Scatter plot of", target, "vs", .x)) +
+    theme_minimal())
+  
+walk(plot_list, print)
+
+
+```
+
+### Multicollinearity
+
+#### Correlation matrix
+
+```{r}
+cor_matrix <- cor(fifa_df[, cols], use = "pairwise.complete.obs")
+
+corrplot(cor_matrix, method = "color", type = "lower", tl.cex = 0.8, number.cex = 0.8, addCoef.col = "black")
+```
+
+#### Actions
+
+From the correlation matrix above, we have identified **high multicollinearity** between pace and movement_acceleration and movement_spring_speed. For the sake of faster model deployment we have decided to remove the latter two columns.
+
+```{r}
+
+predictors <- setdiff(predictors, c("movement_acceleration", "movement_sprint_speed"))
+cols <- append(predictors, target)
+cols
+
+fifa_df <- fifa_df %>%
+  select(all_of(cols))
+
+View(fifa_df)
+
+```
+
+### Normality
+
+```{r}
+
+plot_list <- map(predictors, ~ ggplot(fifa_df, aes(x = .data[[.x]])) +   # Only use x aesthetic for the predictor
+                   geom_density(fill = "green") +
+                   ggtitle(paste("Density plot of", .x, "with respect to", target)) +  # Title
+                   theme_minimal())
+
+# Print all plots
+walk(plot_list, print)
+
+```
+
+### Outliers
+
+```{r}
+
+
+plot_list <- map(predictors, ~ ggplot(fifa_df, aes(x = .data[[target]], y = .data[[.x]])) +
+                   geom_boxplot(aes(group = .data[[.x]])) +
+                   ggtitle(paste("Outliers of", .x, "with respect to", target)) +
+                   theme_minimal())
+
+# Print all plots
+walk(plot_list, print)
+```
+
+#### Action
+
+```{r}
+
+# # Capping outliers
+# cap_outliers <- function(data, lower_percentile = 0.05, upper_percentile = 0.95) {
+#   lower_bound <- quantile(data, lower_percentile)
+#   upper_bound <- quantile(data, upper_percentile)
+#   data[data < lower_bound] <- lower_bound
+#   data[data > upper_bound] <- upper_bound
+#   return(data)
+# }
+# 
+# fifa_df <- fifa_df %>%
+#   mutate(across(where(is.numeric), ~cap_outliers(.)))
+# install.packages("DescTools")
+  # library(DescTools)
+  # 
+  # # Apply Winsorization to all numeric columns
+  # fifa_df <- fifa_df %>%
+#   mutate(across(where(is.numeric), ~ Winsorize(., quantile = (., probs = c(0.05, 0.95)))))
+# fifa_df <- fifa_df %>%
+#   mutate(across(where(is.numeric), ~ log1p(.)))  # log1p(x) = log(x + 1)
+
+# fifa_df$pace <- cap_outliers(fifa_df$pace)
+# outliers
+
+```
+
+## Model training&testing
+
+### Fitting model
+
+First, we construct a formula where we combine all predictors to make a greater effect on model's predictability.
+
+```{r}
+
+# Define training control with K-fold cross-validation
+train_control <- trainControl(method = "cv", number = 10)
+
+# Train model with polynomial degrees for x1 and x2
+cv_model <- train(overall ~ poly(power_strength, 2) + poly(dribbling, 2) + poly(passing, 1) + poly(defending, 2), data = fifa_df, method = "lm", trControl = train_control)
+print(cv_model)
+
+```
+
+### Coefficients
+
+```{r}
+
+summary(cv_model)
+```
+
+From the residuals quartiles we can say, that most of the predictions are within 1.5 to 1.6 points from the overall value. The residuals are not heavily skewed, meaning model has reasonable prediction accuracy.
+
+The dribbling, defending and strength have the biggest impact on overall rating. The jumping is not significant in this model.
+
+From the model performance we can consider **Multiple R-squared** which tells us that model explains about 85% of the variance of the total overall rating. Other factors might further improve this. The **F-statistic**'s value tells us the model is significant, meaning at least one predictor is strongly related to the overall.
+
+### Checking homoscedasticity
+
+```{r}
+# Create a data frame with fitted values and residuals
+residuals_df <- data.frame(
+  fitted_values = fitted(cv_model),
+  residuals = residuals(cv_model)
+)
+
+ggplot(data = residuals_df, mapping = aes(x = fitted_values, y = residuals)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs. Fitted Values",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+```
+
+### Checking normality
+
+```{r}
+
+ggplot(residuals_df, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(title = "Q-Q Plot of Residuals") +
+  theme_minimal()
+```
+
+## Conclusion
+
+To sum up, in this practicum we have performed three steps in total, from initial actions (loading dataset and viewing it), to carrying out EDA (feature selection, feature transformation, distribution analysis, etc.) and finally training and evaluating the model.
+
+In EDA we identified non-linear relationship between target and predictors. After training the model we have decided to work with these predictors:
+
+1)  power_strength
+
+2)  dribbling
+
+3)  passing
+
+4)  defending
+
+as these have the greatest effect on the predictor.
